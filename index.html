@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Browser Royale</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; color: white; font-family: sans-serif; }
+    #ui { position: fixed; top: 10px; left: 10px; line-height: 1.6; }
+    #stick {
+      position: fixed;
+      bottom: 80px;
+      left: 80px;
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.1);
+      display: none;
+    }
+    #stickInner {
+      position: absolute;
+      left: 40px;
+      top: 40px;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.5);
+    }
+  </style>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="ui">
+    <div id="hp"></div>
+    <div id="kills"></div>
+  </div>
+  <div id="stick"><div id="stickInner"></div></div>
+
+  <script>
+    // ===== Supabase 設定 =====
+    const SUPABASE_URL = "https://kmsafoaixlmrvsxiazxh.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_ctDI50Ye5CsWBtRbEBr2Pw_gdNMZihp";
+
+    // グローバル名衝突を避けるため client 名を変更
+    const supabaseClient = window.supabase.createClient(
+      SUPABASE_URL,
+      SUPABASE_ANON_KEY
+    );
+
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    function resize(){ canvas.width = innerWidth; canvas.height = innerHeight; }
+    addEventListener("resize", resize); resize();
+
+    const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+    const stick = document.getElementById("stick");
+    const stickInner = document.getElementById("stickInner");
+    if (isMobile) stick.style.display = "block";
+
+    const player = { x: canvas.width/2, y: canvas.height/2, r: 15, hp: 100, maxHp: 100, speed: 4 };
+
+    let gameStarted = false;
+    let gameOver = false;
+    let gameTime = 180;
+    let lastTime = Date.now();
+    let kills = 0;
+    let score = 0;
+
+    const enemies = [];
+    const bullets = [];
+    const enemyBullets = [];
+    const keys = {};
+    const mouse = {x:0,y:0};
+
+    addEventListener("keydown", e=>keys[e.key]=true);
+    addEventListener("keyup", e=>keys[e.key]=false);
+    canvas.addEventListener("mousemove", e=>{ mouse.x=e.clientX; mouse.y=e.clientY; });
+    canvas.addEventListener("click", ()=>{
+      if(!gameStarted){ gameStarted=true; return; }
+      if(gameOver) return;
+      shoot(player.x,player.y,mouse.x,mouse.y,bullets,8);
+    });
+
+    function shoot(sx,sy,tx,ty,list,speed){
+      const dx=tx-sx, dy=ty-sy;
+      const len=Math.hypot(dx,dy)||1;
+      list.push({x:sx,y:sy,vx:dx/len*speed,vy:dy/len*speed,r:4});
+    }
+    function clamp(v,min,max){ return Math.max(min,Math.min(max,v)); }
+
+    function spawnEnemy(){
+      if(!gameStarted||gameOver||enemies.length>=2) return;
+      const r=15,m=r+5;
+      enemies.push({
+        x:Math.random()*(canvas.width-m*2)+m,
+        y:Math.random()*(canvas.height-m*2)+m,
+        r, hp:3, shootCooldown:120
+      });
+    }
+    setInterval(spawnEnemy,5000);
+
+    let stickDX=0, stickDY=0;
+    if(isMobile){
+      stick.addEventListener("touchmove", e=>{
+        const t=e.touches[0];
+        const rect=stick.getBoundingClientRect();
+        const cx=rect.left+rect.width/2;
+        const cy=rect.top+rect.height/2;
+        let dx=t.clientX-cx, dy=t.clientY-cy;
+        const len=Math.hypot(dx,dy), max=40;
+        if(len>max){ dx=dx/len*max; dy=dy/len*max; }
+        stickInner.style.left=40+dx+"px";
+        stickInner.style.top=40+dy+"px";
+        stickDX=dx/max; stickDY=dy/max;
+      });
+      stick.addEventListener("touchend",()=>{ stickDX=stickDY=0; stickInner.style.left="40px"; stickInner.style.top="40px"; });
+    }
+
+    function update(){
+      const now=Date.now();
+      if(gameStarted&&!gameOver){
+        gameTime-=(now-lastTime)/1000;
+        if(gameTime<=0){ gameTime=0; gameOver=true; saveScore(score); }
+      }
+      lastTime=now;
+      if(!gameStarted||gameOver) return;
+
+      if(keys.w) player.y-=player.speed;
+      if(keys.s) player.y+=player.speed;
+      if(keys.a) player.x-=player.speed;
+      if(keys.d) player.x+=player.speed;
+      if(isMobile){ player.x+=stickDX*player.speed; player.y+=stickDY*player.speed; }
+
+      player.x=clamp(player.x,player.r,canvas.width-player.r);
+      player.y=clamp(player.y,player.r,canvas.height-player.r);
+
+      enemies.forEach(e=>{
+        const dx=player.x-e.x, dy=player.y-e.y;
+        const len=Math.hypot(dx,dy)||1;
+        e.x+=dx/len*1.2; e.y+=dy/len*1.2;
+        e.x=clamp(e.x,e.r,canvas.width-e.r);
+        e.y=clamp(e.y,e.r,canvas.height-e.r);
+        if(--e.shootCooldown<=0){ shoot(e.x,e.y,player.x,player.y,enemyBullets,5); e.shootCooldown=120; }
+      });
+
+      bullets.forEach((b,i)=>{
+        b.x+=b.vx; b.y+=b.vy;
+        if(b.x<0||b.x>canvas.width||b.y<0||b.y>canvas.height){ bullets.splice(i,1); return; }
+        enemies.forEach(e=>{
+          if(Math.hypot(b.x-e.x,b.y-e.y)<b.r+e.r){ e.hp--; bullets.splice(i,1); }
+        });
+      });
+
+      enemyBullets.forEach((b,i)=>{
+        b.x+=b.vx; b.y+=b.vy;
+        if(b.x<0||b.x>canvas.width||b.y<0||b.y>canvas.height){ enemyBullets.splice(i,1); return; }
+        if(Math.hypot(b.x-player.x,b.y-player.y)<b.r+player.r){ player.hp-=5; enemyBullets.splice(i,1); }
+      });
+
+      enemies.forEach((e,i)=>{
+        if(e.hp<=0){ 
+          enemies.splice(i,1); 
+          kills++; 
+          score=kills; 
+          player.hp=Math.min(player.maxHp,player.hp+5);
+          // 敵を即スポーン
+          spawnEnemy();
+        }
+      });
+
+      if(player.hp<=0){
+        // 即リスポーン
+        player.hp = player.maxHp;
+        player.x = canvas.width/2;
+        player.y = canvas.height/2;
+      }
+      hp.textContent=`HP: ${player.hp} / ${player.maxHp}`;
+      killsDiv.textContent=`KILLS: ${kills} | SCORE: ${score} | TIME: ${Math.ceil(gameTime)}`;
+    }
+
+    async function draw(){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      if(!gameStarted){
+        ctx.textAlign="center";
+        ctx.fillStyle="white";
+        ctx.font="40px sans-serif";
+        ctx.fillText("BROWSER ROYALE",canvas.width/2,canvas.height/2-80);
+        ctx.font="20px sans-serif";
+        ctx.fillText("PC: WASD移動 / クリック射撃",canvas.width/2,canvas.height/2+10);
+        ctx.fillText("スマホ: スティック移動 / タップ射撃",canvas.width/2,canvas.height/2+40);
+        ctx.textAlign="left";
+        return;
+      }
+
+      ctx.fillStyle="lime";
+      ctx.beginPath(); ctx.arc(player.x,player.y,player.r,0,Math.PI*2); ctx.fill();
+
+      enemies.forEach(e=>{
+        ctx.fillStyle="red";
+        ctx.beginPath(); ctx.arc(e.x,e.y,e.r,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle="gray"; ctx.fillRect(e.x-15,e.y-e.r-10,30,5);
+        ctx.fillStyle="lime"; ctx.fillRect(e.x-15,e.y-e.r-10,30*(e.hp/3),5);
+      });
+
+      ctx.fillStyle="white";
+      bullets.forEach(b=>{ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill(); });
+      ctx.fillStyle="orange";
+      enemyBullets.forEach(b=>{ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill(); });
+
+      if(gameOver){
+        const ranking = await loadRanking();
+        ctx.textAlign="center";
+        ctx.font="50px sans-serif";
+        ctx.fillStyle="red";
+        ctx.fillText("TIME UP",canvas.width/2,canvas.height/2-40);
+        ctx.font="30px sans-serif";
+        ctx.fillStyle="white";
+        ctx.fillText(`SCORE: ${score}`,canvas.width/2,canvas.height/2+10);
+        ctx.fillText("RANKING",canvas.width/2,canvas.height/2+60);
+        ranking.forEach((r,i)=>{
+          ctx.fillText(`${i+1}. ${r.name} - ${r.score}`,canvas.width/2,canvas.height/2+100+i*30);
+        });
+        ctx.textAlign="left";
+      }
+    }
+
+    function loop(){ update(); draw(); requestAnimationFrame(loop); }
+    loop();
+
+    async function saveScore(s){
+      const name = prompt("名前を入力してください") || "NO NAME";
+      await supabaseClient.from("scores").insert({ name, score:s });
+    }
+    async function loadRanking(){
+      const { data } = await supabaseClient
+        .from("scores")
+        .select("name,score")
+        .order("score",{ascending:false})
+        .limit(5);
+      return data || [];
+    }
+
+    const hp = document.getElementById("hp");
+    const killsDiv = document.getElementById("kills");
+  </script>
+</body>
+</html>
